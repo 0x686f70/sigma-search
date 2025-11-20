@@ -183,3 +183,6 @@ Thumbs.db
 *.swo
 *~ 
 *.yml
+sigma_rules/
+.flaskenv
+.vs/
