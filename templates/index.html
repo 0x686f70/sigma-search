@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sigma Rules Navigator</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" sizes="any">
+    <link rel="icon" href="{{ url_for('main.favicon') }}" sizes="any">
+    <link rel="mask-icon" href="{{ url_for('static', filename='favicon.svg') }}" color="#ffb347">
+    <link href="https://fonts.googleapis.com/css?family=Inter:400,600,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="main-container">
+        <div class="header-card">
+            <h1><i class="fas fa-shield-alt"></i> Sigma Rules Navigator</h1>
+            <div class="subtitle">Browse detection rules by category or search for specific MITRE techniques</div>
+                         <div class="deployment-stats" id="deployment-stats" style="margin-top: 8px; font-size: 0.9em; color: #7c3aed;">
+                 <i class="fas fa-chart-bar"></i> <span id="deployed-count">0</span> deployed of <span id="total-rules">{{ results|length }}</span> rules
+             </div>
+            <div class="button-group">
+                <form method="POST" action="/update" style="display:inline;" id="update-form">
+                    <button class="update-btn" type="submit" id="update-btn"><i class="fas fa-sync"></i> Update Sigma Database <span id="update-spinner" style="display:none; margin-left:6px;"><i class="fas fa-spinner fa-spin"></i></span></button>
+                </form>
+                <button class="custom-rules-btn" onclick="openCustomRulesModal()"><i class="fas fa-plus"></i> Custom Rules</button>
+                <button class="test-data-btn" onclick="createTestData()" style="background: #7c3aed; margin-left: 8px;"><i class="fas fa-flask"></i> Create Test Data</button>
+                <button class="refresh-data-btn" onclick="refreshDeploymentData()" style="background: #059669; margin-left: 8px;"><i class="fas fa-refresh"></i> Refresh</button>
+            </div>
+            <div id="update-notification" style="display:none; margin-top:8px; font-size:0.98em;"></div>
+        </div>
+        <div class="filter-card">
+            <label for="deployment-select">Deployment:</label>
+            <select id="deployment-select">
+                <option value="">All Rules</option>
+                <option value="deployed">Deployed</option>
+                <option value="undeployed">Undeployed</option>
+            </select>
+            <label for="category-select">Category:</label>
+            <select id="category-select"></select>
+            <label for="subcategory-select">Subcategory:</label>
+            <select id="subcategory-select"></select>
+        </div>
+        <div class="search-card">
+            <form method="GET" action="/" class="search-form" id="search-form">
+                <input type="text" name="query" class="search-input" placeholder="Try: author:Nextron AND (date:2025 OR modified:2025), or just mimikatz..." value="{{ query|e }}">
+                <input type="hidden" name="category" value="{{ selected_category|e }}" id="category-hidden">
+                <input type="hidden" name="subcategory" value="{{ selected_subcategory|e }}" id="subcategory-hidden">
+                <input type="hidden" name="deployment_status" value="{{ selected_deployment_status|e }}" id="deployment-hidden">
+                <button type="submit" class="search-btn"><i class="fas fa-search"></i> Search</button>
+            </form>
+            <div class="search-help" id="search-help" style="margin-top: 8px; font-size: 0.85em; color: #8b949e; display: none;">
+                <strong>Advanced Search Examples:</strong><br>
+                • <code>author:Nextron AND (date:2025 OR modified:2025)</code><br>
+                • <code>product:windows AND level:high</code><br>
+                • <code>mimikatz OR powershell</code><br>
+                • <code>status:experimental AND NOT author:"Microsoft"</code><br>
+                <strong>Available fields:</strong> author, date, modified, title, description, tags, product, category, level, status, id
+            </div>
+            <div style="text-align: center; margin-top: 4px;">
+                <button type="button" onclick="toggleSearchHelp()" style="background: none; border: none; color: #7c3aed; font-size: 0.8em; cursor: pointer;">
+                    <i class="fas fa-question-circle"></i> Search Help
+                </button>
+            </div>
+        </div>
+        {% if grouped_rules %}
+        <div class="results-card">
+            <div class="results-header">
+                <i class="fas fa-info-circle"></i>
+                Found {{ results|length }} rule{{ results|length > 1 and 's' or '' }}{{ result_description|safe }}
+            </div>
+            {% for product, rules_in_group in grouped_rules.items() %}
+                {% if rules_in_group and rules_in_group|length > 0 %}
+                <section class="platform-group" aria-label="{{ product }}">
+                    <h2 class="group-title">{{ product }}</h2>
+                    <div class="cards-grid">
+                    {% for rule in rules_in_group %}
+                        <div class="card" onclick="showModal({{ results.index(rule) }})">
+                            <div class="card-header">
+                                <div class="deployment-checkbox" onclick="event.stopPropagation();">
+                                    <input type="checkbox" 
+                                           id="deploy-{{ results.index(rule) }}" 
+                                           class="deploy-checkbox"
+                                           data-rule-path="{{ rule.file_path }}"
+                                           data-rule-title="{{ rule.title or rule.file_path.split('/')[-1] }}"
+                                           onchange="updateDeploymentStatus(this)">
+                                    <label for="deploy-{{ results.index(rule) }}" class="checkbox-label" title="Đánh dấu rule đã triển khai">
+                                        <i class="fas fa-check"></i>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="card-filename" title="{{ rule.title or rule.file_path.split('/')[-1] }}" style="white-space:normal; word-break:break-word; margin-bottom: 6px;">
+                                {{ (rule.title or rule.file_path.split('/')[-1])|highlight(query)|safe }}
+                            </div>
+                            <div class="card-label">
+                                {% set tactics = [] %}
+                                {% for tag in rule.tags %}
+                                    {% if tag.startswith('attack.') and tag|length < 30 and tag.count('.') == 1 %}
+                                        {% set _ = tactics.append(tag.replace('attack.', '').replace('_', ' ').title()) %}
+                                    {% endif %}
+                                {% endfor %}
+                                {% if tactics %}
+                                    {{ tactics[:2]|join(', ') }}
+                                {% else %}
+                                    SIGMA RULE
+                                {% endif %}
+                            </div>
+                        </div>
+                    {% endfor %}
+                    </div>
+                </section>
+                {% endif %}
+            {% endfor %}
+        </div>
+        {% elif query %}
+            <div class="no-results">No rules found for <b>{{ query }}</b>.</div>
+        {% endif %}
+    <!-- Sigma Rule Modal -->
+    <div id="sigma-modal" class="sigma-modal" style="overflow-y:auto;">
+        <div class="sigma-modal-content" id="sigma-modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title" id="sigma-modal-title">Rule Details</h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div id="sigma-modal-path" class="modal-path" style="color:#a0a6c3; font-size:0.85em; margin-bottom:6px;"></div>
+            <div class="modal-body">
+                <pre class="modal-content-text" id="sigma-modal-text"></pre>
+            </div>
+            <div class="modal-footer">
+                <button id="sigma-modal-copy" class="modal-copy-btn" onclick="copyModalContent()">
+                    <i class="fas fa-copy"></i> Copy
+                </button>
+                <button id="sigma-modal-convert" class="modal-copy-btn" style="background:#ffb347; color:#23284a; margin-left:8px;" onclick="convertToStructuredQuery()">
+                    <i class="fas fa-sitemap"></i> Structured View
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Rules Modal -->
+    <div id="custom-rules-modal" class="custom-rules-modal">
+        <div class="custom-rules-modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Custom Rules Management</h3>
+                <button class="modal-close" onclick="closeCustomRulesModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="custom-rules-toolbar">
+                    <div class="custom-rules-search">
+                        <input type="text" id="custom-rules-search" placeholder="Try: title:PowerShell OR author:yourname" class="custom-rules-search-input" oninput="filterCustomRules()">
+                        <i class="fas fa-search custom-rules-search-icon"></i>
+                    </div>
+                    <div class="custom-rules-actions">
+                        <button class="search-help-btn" onclick="toggleCustomRulesSearchHelp()" title="Search Help">
+                            <i class="fas fa-question-circle"></i>
+                        </button>
+                        <button class="add-rule-btn" onclick="addNewRule()"><i class="fas fa-plus"></i> Add New Rule</button>
+                        <button class="refresh-btn" onclick="loadCustomRules()"><i class="fas fa-refresh"></i> Refresh</button>
+                    </div>
+                </div>
+                <div class="custom-rules-search-help" id="custom-rules-search-help" style="display: none; margin-bottom: 16px; padding: 12px; background: #2d2d2d; border: 1px solid #404040; border-radius: 6px; font-size: 0.85em; color: #8b949e;">
+                    <strong style="color: #ffffff;">Advanced Search Examples:</strong><br>
+                    • <code>title:PowerShell AND status:test</code> - Search in specific fields<br>
+                    • <code>author:yourname OR description:malware</code> - Boolean operators<br>
+                    • <code>tags:attack.execution</code> - Search in tags<br>
+                    • <code>"exact phrase" AND NOT experimental</code> - Quotes and NOT operator<br>
+                    • <code>(author:john OR author:jane) AND level:high</code> - Parentheses grouping<br>
+                    <strong style="color: #ffffff;">Available fields:</strong> title, description, author, tags, status, level, date, modified, filename
+                </div>
+                <div class="custom-rules-list" id="custom-rules-list">
+                    <!-- Custom rules will be loaded here -->
+                </div>
+                <div class="custom-rule-editor" id="custom-rule-editor" style="display: none;">
+                    <div class="editor-header">
+                        <input type="text" id="rule-filename" placeholder="Rule filename (without .yml)" class="filename-input">
+                        <div class="editor-actions">
+                            <button class="save-btn" onclick="saveCustomRule()"><i class="fas fa-save"></i> Save</button>
+                            <button class="cancel-btn" onclick="cancelEdit()"><i class="fas fa-times"></i> Cancel</button>
+                        </div>
+                    </div>
+                    <div class="yaml-editor-container">
+                        <div class="yaml-editor-help" id="yaml-editor-help" style="margin-bottom: 8px; font-size: 0.8em; color: #8b949e; display: none;">
+                            <i class="fas fa-magic" style="margin-right: 4px;"></i>
+                            <strong>Smart YAML Editor:</strong> 
+                            Press <kbd>Enter</kbd> in lists to auto-add <code>- ''</code> • 
+                            Press <kbd>'</kbd> to auto-complete quotes • 
+                            Use <kbd>Tab</kbd>/<kbd>Shift+Tab</kbd> for indentation • 
+                            Press <kbd>Ctrl+Space</kbd> for field suggestions • 
+                            <kbd>Paste</kbd> multi-line text to auto-format as YAML list
+                        </div>
+                        <textarea id="rule-content" placeholder="Enter your Sigma rule in YAML format..." class="rule-content-textarea" title="YAML Auto-formatting enabled - Press Enter in lists for auto-completion"></textarea>
+                        <div class="yaml-editor-footer" style="margin-top: 8px; text-align: right;">
+                            <button type="button" onclick="toggleYamlHelp()" style="background: none; border: none; color: #7c3aed; font-size: 0.8em; cursor: pointer;">
+                                <i class="fas fa-question-circle"></i> Formatting Help
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Structured Query Modal -->
+    <div id="structured-query-modal" class="structured-query-modal">
+        <div class="structured-query-modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Structured Query View</h3>
+                <button class="modal-close" onclick="closeStructuredQueryModal()">&times;</button>
+            </div>
+            
+            <div class="structured-query-stats">
+                <div class="stat-item">
+                    <i class="fas fa-layer-group"></i>
+                    <span id="query-groups-count">0 Groups</span>
+                </div>
+                <div class="stat-item">
+                    <i class="fas fa-filter"></i>
+                    <span id="query-conditions-count">0 Conditions</span>
+                </div>
+                <div class="stat-item">
+                    <i class="fas fa-arrow-down"></i>
+                    <span id="query-depth">Depth: 0</span>
+                </div>
+            </div>
+            
+            <div class="structured-query-body">
+                <div class="query-summary-section">
+                    <button class="query-summary-header" onclick="toggleSummary()">
+                        <i class="fas fa-list"></i>
+                        Query Summary
+                        <i class="fas fa-chevron-down" id="summary-toggle-icon"></i>
+                    </button>
+                    <div class="query-summary-content" id="summary-content" style="display: none;">
+                        <!-- Query summary will be rendered here -->
+                    </div>
+                </div>
+                
+                <div id="structured-query-content">
+                    <!-- Structured query will be rendered here -->
+                </div>
+            </div>
+            
+            <div class="modal-footer">
+                <button id="structured-query-copy" class="modal-copy-btn" onclick="copyStructuredQuery()">
+                    <i class="fas fa-copy"></i> Copy Query
+                </button>
+                <button id="structured-query-raw" class="modal-raw-btn" onclick="showRawQuery()">
+                    <i class="fas fa-code"></i> Show Raw
+                </button>
+                <button id="structured-query-back" class="modal-back-btn" onclick="backToSigmaView()" title="Back to Sigma rule view">
+                    <i class="fas fa-arrow-left"></i> Back to Sigma View
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+      const rules = {{ results|default([])|tojson|safe }};
+    </script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
